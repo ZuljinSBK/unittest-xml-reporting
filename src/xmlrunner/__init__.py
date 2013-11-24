@@ -40,6 +40,10 @@ class _DelegateIO(object):
         self._captured.write(text)
         self.delegate.write(text)
 
+    def reset(self):
+        self._captured.truncate(0)
+        self._captured.seek(0)
+
     def __getattr__(self, attr):
         return getattr(self._captured, attr)
 
@@ -64,12 +68,15 @@ class _TestInfo(object):
     # Possible test outcomes
     (SUCCESS, FAILURE, ERROR, SKIP) = range(4)
 
-    def __init__(self, test_result, test_method, outcome=SUCCESS, err=None):
+    def __init__(self, test_result, test_method, outcome=SUCCESS, err=None,
+                 std_output=None, err_output=None):
         self.test_result = test_result
         self.test_method = test_method
         self.outcome = outcome
         self.elapsed_time = 0
         self.err = err
+        self.std_output = std_output
+        self.err_output = err_output
 
         self.test_description = self.test_result.getDescription(test_method)
         self.test_exception_info = (
@@ -103,6 +110,18 @@ class _TestInfo(object):
         """
         return self.test_exception_info
 
+    def get_std_output(self):
+        """
+        Return a text representation of standard output caught during test.
+        """
+        return self.std_output
+
+    def get_err_output(self):
+        """
+        Return a text representation of standard error output caught during test.
+        """
+        return self.err_output
+
 
 class _XMLTestResult(_TextTestResult):
     """
@@ -111,11 +130,12 @@ class _XMLTestResult(_TextTestResult):
     Used by XMLTestRunner.
     """
     def __init__(self, stream=sys.stderr, descriptions=1, verbosity=1,
-                 elapsed_times=True):
+                 elapsed_times=True, per_test_output=False):
         _TextTestResult.__init__(self, stream, descriptions, verbosity)
         self.successes = []
         self.callback = None
         self.elapsed_times = elapsed_times
+        self.per_test_output = per_test_output
 
     def _prepare_callback(self, test_info, target_list, verbose_str,
                           short_str):
@@ -170,15 +190,28 @@ class _XMLTestResult(_TextTestResult):
         """
         Called when a test executes successfully.
         """
+        if self.per_test_output:
+            testinfo = _TestInfo(self, test, 
+                                 std_output=sys.stdout.getvalue(), err_output=sys.stderr.getvalue())
+            sys.stdout.reset()
+            sys.stderr.reset()
+        else:
+            testinfo = _TestInfo(self, test)
         self._prepare_callback(
-            _TestInfo(self, test), self.successes, 'OK', '.'
+            testinfo, self.successes, 'OK', '.'
         )
 
     def addFailure(self, test, err):
         """
         Called when a test method fails.
         """
-        testinfo = _TestInfo(self, test, _TestInfo.ERROR, err)
+        if self.per_test_output:
+            testinfo = _TestInfo(self, test, _TestInfo.ERROR, err,
+                                 std_output=sys.stdout.getvalue(), err_output=sys.stderr.getvalue())
+            sys.stdout.reset()
+            sys.stderr.reset()
+        else:
+            testinfo = _TestInfo(self, test, _TestInfo.ERROR, err)
         self.errors.append((
             testinfo,
             self._exc_info_to_string(err, test)
@@ -189,7 +222,13 @@ class _XMLTestResult(_TextTestResult):
         """
         Called when a test method raises an error.
         """
-        testinfo = _TestInfo(self, test, _TestInfo.ERROR, err)
+        if self.per_test_output:
+            testinfo = _TestInfo(self, test, _TestInfo.ERROR, err,
+                                 std_output=sys.stdout.getvalue(), err_output=sys.stderr.getvalue())
+            sys.stdout.reset()
+            sys.stderr.reset()
+        else:
+            testinfo = _TestInfo(self, test, _TestInfo.ERROR, err)
         self.errors.append((
             testinfo,
             self._exc_info_to_string(err, test)
@@ -200,7 +239,13 @@ class _XMLTestResult(_TextTestResult):
         """
         Called when a test method was skipped.
         """
-        testinfo = _TestInfo(self, test, _TestInfo.SKIP, reason)
+        if self.per_test_output:
+            testinfo = _TestInfo(self, test, _TestInfo.SKIP, reason,
+                                 std_output=sys.stdout.getvalue(), err_output=sys.stderr.getvalue())
+            sys.stdout.reset()
+            sys.stderr.reset()
+        else:
+            testinfo = _TestInfo(self, test, _TestInfo.SKIP, reason)
         self.skipped.append((testinfo, reason))
         self._prepare_callback(testinfo, [], 'SKIP', 'S')
 
@@ -295,6 +340,16 @@ class _XMLTestResult(_TextTestResult):
                 failure.setAttribute('type', 'skip')
                 failure.setAttribute('message', test_result.err)
 
+        if test_result.get_std_output():
+            systemout = xml_document.createElement('system-out')
+            testcase.appendChild(systemout)
+            systemout_text = xml_document.createCDATASection(test_result.get_std_output())
+            systemout.appendChild(systemout_text)
+        if test_result.get_err_output():
+            systemerr = xml_document.createElement('system-err')
+            testcase.appendChild(systemerr)
+            systemerr_text = xml_document.createCDATASection(test_result.get_err_output())
+            systemerr.appendChild(systemerr_text)
 
     _report_testcase = staticmethod(_report_testcase)
 
@@ -336,7 +391,8 @@ class _XMLTestResult(_TextTestResult):
             )
             for test in tests:
                 _XMLTestResult._report_testcase(suite, test, testsuite, doc)
-            _XMLTestResult._report_output(test_runner, testsuite, doc)
+            if not self.per_test_output:
+                _XMLTestResult._report_output(test_runner, testsuite, doc)
             xml_content = doc.toprettyxml(indent='\t')
 
             if type(test_runner.output) is str:
@@ -360,7 +416,8 @@ class XMLTestRunner(TextTestRunner):
     A test runner class that outputs the results in JUnit like XML files.
     """
     def __init__(self, output='.', outsuffix=None, stream=sys.stderr,
-                 descriptions=True, verbosity=1, elapsed_times=True):
+                 descriptions=True, verbosity=1, elapsed_times=True,
+                 per_test_output=False):
         TextTestRunner.__init__(self, stream, descriptions, verbosity)
         self.verbosity = verbosity
         self.output = output
@@ -369,6 +426,7 @@ class XMLTestRunner(TextTestRunner):
         else:
             self.outsuffix = time.strftime("%Y%m%d%H%M%S")
         self.elapsed_times = elapsed_times
+        self.per_test_output = per_test_output
 
     def _make_result(self):
         """
@@ -376,7 +434,7 @@ class XMLTestRunner(TextTestRunner):
         information about the executed tests.
         """
         return _XMLTestResult(
-            self.stream, self.descriptions, self.verbosity, self.elapsed_times
+            self.stream, self.descriptions, self.verbosity, self.elapsed_times, self.per_test_output
         )
 
     def _patch_standard_output(self):
