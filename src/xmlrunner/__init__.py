@@ -282,12 +282,12 @@ class _XMLTestResult(_TextTestResult):
 
         return tests_by_testcase
 
-    def _report_testsuite(suite_name, outsuffix, tests, xml_document):
+    def _report_testsuite(suite_name, outsuffix, tests, xml_node, xml_document):
         """
         Appends the testsuite section to the XML document.
         """
         testsuite = xml_document.createElement('testsuite')
-        xml_document.appendChild(testsuite)
+        xml_node.appendChild(testsuite)
 
         testsuite.setAttribute('name', "%s-%s" % (suite_name, outsuffix))
         testsuite.setAttribute('tests', str(len(tests)))
@@ -370,6 +370,18 @@ class _XMLTestResult(_TextTestResult):
         systemerr.appendChild(systemerr_text)
 
     _report_output = staticmethod(_report_output)
+    
+    def _add_xml_report(self, test_runner, suite, tests, node, doc):
+            # Build the XML file
+            testsuite = _XMLTestResult._report_testsuite(
+                suite, test_runner.outsuffix, tests, node, doc
+            )
+            for test in tests:
+                _XMLTestResult._report_testcase(suite, test, testsuite, doc)
+            if not self.per_test_output:
+                _XMLTestResult._report_output(test_runner, testsuite, doc)
+            xml_content = doc.toprettyxml(indent='\t')
+            return xml_content
 
     def generate_reports(self, test_runner):
         """
@@ -378,36 +390,44 @@ class _XMLTestResult(_TextTestResult):
         from xml.dom.minidom import Document
         all_results = self._get_info_by_testcase(test_runner.outsuffix)
 
-        if (isinstance(test_runner.output, str) and not
-                os.path.exists(test_runner.output)):
-            os.makedirs(test_runner.output)
-
-        for suite, tests in all_results.items():
-            doc = Document()
-
-            # Build the XML file
-            testsuite = _XMLTestResult._report_testsuite(
-                suite, test_runner.outsuffix, tests, doc
-            )
-            for test in tests:
-                _XMLTestResult._report_testcase(suite, test, testsuite, doc)
-            if not self.per_test_output:
-                _XMLTestResult._report_output(test_runner, testsuite, doc)
-            xml_content = doc.toprettyxml(indent='\t')
-
-            if type(test_runner.output) is str:
-                report_file = open(
-                    '%s%sTEST-%s-%s.xml' % (
-                        test_runner.output, os.sep, suite,
-                        test_runner.outsuffix
-                    ), 'w'
-                )
-                try:
+        if isinstance(test_runner.output, str) and not test_runner.output.lower().endswith(".xml"):
+            if not os.path.exists(test_runner.output):
+                os.makedirs(test_runner.output)
+            for suite, tests in all_results.items():
+                doc = Document()
+                self._add_xml_report(test_runner, suite, tests, doc, doc)
+                xml_content = doc.toprettyxml(indent='\t')
+                if test_runner.outsuffix:
+                    filename = '%s%sTEST-%s-%s.xml' % (test_runner.output, os.sep, suite, test_runner.outsuffix)
+                else:
+                    filename = '%s%sTEST-%s.xml' % (test_runner.output, os.sep, suite)
+                with open(filename, 'w') as report_file:
                     report_file.write(xml_content)
-                finally:
-                    report_file.close()
+
+        elif isinstance(test_runner.output, str) and test_runner.output.lower().endswith(".xml"):
+            file, ext = os.path.splitext(os.path.abspath(test_runner.output))
+            dir, base = os.path.split(os.path.abspath(test_runner.output))
+            if not os.path.exists(dir):
+                os.makedirs(dir)
+
+            doc = Document()
+            xml_suites = doc.createElement('testsuites')
+            doc.appendChild(xml_suites)
+            if test_runner.outsuffix:
+                filename = '%s-%s%s' % (file, test_runner.outsuffix, ext)
             else:
+                filename = '%s%s' % (file, ext)
+            with open(filename, 'w') as report_file:
+                for suite, tests in all_results.items():
+                    self._add_xml_report(test_runner, suite, tests, xml_suites, doc)
+                xml_content = doc.toprettyxml(indent='\t')
+                report_file.write(xml_content)
+        else:
+            for suite, tests in all_results.items():
                 # Assume that test_runner.output is a stream
+                doc = Document()
+                self._add_xml_report(test_runner, suite, tests, doc, doc)
+                xml_content = doc.toprettyxml(indent='\t')
                 test_runner.output.write(xml_content)
 
 
