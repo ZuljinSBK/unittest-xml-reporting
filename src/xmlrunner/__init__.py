@@ -6,6 +6,7 @@ default TextTestRunner.
 """
 
 import os
+import re
 import sys
 import time
 try:
@@ -21,10 +22,14 @@ try:
 except ImportError:
     from io import StringIO
 
-
 # Allow version to be detected at runtime.
 from .version import __version__, __version_info__
 
+try:
+    # Python 3 has a bytes type and in Python 2.6+ bytes is an alias to str.
+    bytestring_type = bytes
+except NameError:
+    bytestring_type = str
 
 class _DelegateIO(object):
     """
@@ -47,6 +52,21 @@ class _DelegateIO(object):
     def __getattr__(self, attr):
         return getattr(self._captured, attr)
 
+# Matches invalid XML1.0 unicode characters, like control characters:
+# http://www.w3.org/TR/2006/REC-xml-20060816/#charsets
+INVALID_XML_1_0_UNICODE_RE = re.compile(
+    u'[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFFFE\uFFFF]', re.UNICODE)
+
+
+def xml_safe_unicode(base, encoding='utf-8'):
+    """Return a unicode string containing only valid XML characters.
+
+    encoding - if base is a byte string it is first decoded to unicode
+        using this encoding.
+    """
+    if isinstance(base, bytestring_type):
+        base = base.decode(encoding)
+    return INVALID_XML_1_0_UNICODE_RE.sub('', base)
 
 def testcase_name(test_method):
     testcase = type(test_method)
@@ -130,12 +150,13 @@ class _XMLTestResult(_TextTestResult):
     Used by XMLTestRunner.
     """
     def __init__(self, stream=sys.stderr, descriptions=1, verbosity=1,
-                 elapsed_times=True, per_test_output=False):
+                 elapsed_times=True, per_test_output=False, encoding='utf-8'):
         _TextTestResult.__init__(self, stream, descriptions, verbosity)
         self.successes = []
         self.callback = None
         self.elapsed_times = elapsed_times
         self.per_test_output = per_test_output
+        self.encoding = encoding
 
     def _prepare_callback(self, test_info, target_list, verbose_str,
                           short_str):
@@ -313,7 +334,8 @@ class _XMLTestResult(_TextTestResult):
 
     _test_method_name = staticmethod(_test_method_name)
 
-    def _report_testcase(suite_name, test_result, xml_testsuite, xml_document):
+    def _report_testcase(suite_name, test_result, xml_testsuite, xml_document,
+                         encoding='utf-8'):
         """
         Appends a testcase section to the XML document.
         """
@@ -332,41 +354,42 @@ class _XMLTestResult(_TextTestResult):
             testcase.appendChild(failure)
             if test_result.outcome != _TestInfo.SKIP:
                 failure.setAttribute('type', test_result.err[0].__name__)
-                failure.setAttribute('message', str(test_result.err[1]))
-                error_info = str(test_result.get_error_info())
+                failure.setAttribute('message', xml_safe_unicode(str(test_result.err[1]), encoding))
+                error_info = xml_safe_unicode(test_result.get_error_info(), encoding)
                 failureText = xml_document.createCDATASection(error_info)
                 failure.appendChild(failureText)
             else:
                 failure.setAttribute('type', 'skip')
-                failure.setAttribute('message', test_result.err)
+                failure.setAttribute('message', xml_safe_unicode(test_result.err, encoding))
 
         if test_result.get_std_output():
             systemout = xml_document.createElement('system-out')
             testcase.appendChild(systemout)
-            systemout_text = xml_document.createCDATASection(test_result.get_std_output())
+            systemout_text = xml_document.createCDATASection(xml_safe_unicode(test_result.get_std_output(), encoding))
             systemout.appendChild(systemout_text)
         if test_result.get_err_output():
             systemerr = xml_document.createElement('system-err')
             testcase.appendChild(systemerr)
-            systemerr_text = xml_document.createCDATASection(test_result.get_err_output())
+            systemerr_text = xml_document.createCDATASection(xml_safe_unicode(test_result.get_err_output(), encoding))
             systemerr.appendChild(systemerr_text)
 
     _report_testcase = staticmethod(_report_testcase)
 
-    def _report_output(test_runner, xml_testsuite, xml_document):
+    def _report_output(test_runner, xml_testsuite, xml_document,
+                       encoding='utf-8'):
         """
         Appends the system-out and system-err sections to the XML document.
         """
         systemout = xml_document.createElement('system-out')
         xml_testsuite.appendChild(systemout)
 
-        systemout_text = xml_document.createCDATASection(sys.stdout.getvalue())
+        systemout_text = xml_document.createCDATASection(xml_safe_unicode(sys.stdout.getvalue(), encoding))
         systemout.appendChild(systemout_text)
 
         systemerr = xml_document.createElement('system-err')
         xml_testsuite.appendChild(systemerr)
 
-        systemerr_text = xml_document.createCDATASection(sys.stderr.getvalue())
+        systemerr_text = xml_document.createCDATASection(xml_safe_unicode(sys.stderr.getvalue(), encoding))
         systemerr.appendChild(systemerr_text)
 
     _report_output = staticmethod(_report_output)
@@ -377,10 +400,10 @@ class _XMLTestResult(_TextTestResult):
                 suite, test_runner.outsuffix, tests, node, doc
             )
             for test in tests:
-                _XMLTestResult._report_testcase(suite, test, testsuite, doc)
+                _XMLTestResult._report_testcase(suite, test, testsuite, doc, encoding=self.encoding)
             if not self.per_test_output:
-                _XMLTestResult._report_output(test_runner, testsuite, doc)
-            xml_content = doc.toprettyxml(indent='\t')
+                _XMLTestResult._report_output(test_runner, testsuite, doc, encoding=self.encoding)
+            xml_content = doc.toprettyxml(indent='\t', encoding=self.encoding)
             return xml_content
 
     def generate_reports(self, test_runner):
@@ -396,12 +419,12 @@ class _XMLTestResult(_TextTestResult):
             for suite, tests in all_results.items():
                 doc = Document()
                 self._add_xml_report(test_runner, suite, tests, doc, doc)
-                xml_content = doc.toprettyxml(indent='\t')
+                xml_content = doc.toprettyxml(indent='\t', encoding=self.encoding)
                 if test_runner.outsuffix:
                     filename = '%s%sTEST-%s-%s.xml' % (test_runner.output, os.sep, suite, test_runner.outsuffix)
                 else:
                     filename = '%s%sTEST-%s.xml' % (test_runner.output, os.sep, suite)
-                with open(filename, 'w') as report_file:
+                with open(filename, 'wb') as report_file:
                     report_file.write(xml_content)
 
         elif isinstance(test_runner.output, str) and test_runner.output.lower().endswith(".xml"):
@@ -417,17 +440,17 @@ class _XMLTestResult(_TextTestResult):
                 filename = '%s-%s%s' % (file, test_runner.outsuffix, ext)
             else:
                 filename = '%s%s' % (file, ext)
-            with open(filename, 'w') as report_file:
+            with open(filename, 'wb') as report_file:
                 for suite, tests in all_results.items():
                     self._add_xml_report(test_runner, suite, tests, xml_suites, doc)
-                xml_content = doc.toprettyxml(indent='\t')
+                xml_content = doc.toprettyxml(indent='\t', encoding=self.encoding)
                 report_file.write(xml_content)
         else:
             for suite, tests in all_results.items():
                 # Assume that test_runner.output is a stream
                 doc = Document()
                 self._add_xml_report(test_runner, suite, tests, doc, doc)
-                xml_content = doc.toprettyxml(indent='\t')
+                xml_content = doc.toprettyxml(indent='\t', encoding=self.encoding)
                 test_runner.output.write(xml_content)
 
 
@@ -437,7 +460,7 @@ class XMLTestRunner(TextTestRunner):
     """
     def __init__(self, output='.', outsuffix=None, stream=sys.stderr,
                  descriptions=True, verbosity=1, elapsed_times=True,
-                 per_test_output=False):
+                 per_test_output=False, encoding='utf-8'):
         TextTestRunner.__init__(self, stream, descriptions, verbosity)
         self.verbosity = verbosity
         self.output = output
@@ -447,6 +470,7 @@ class XMLTestRunner(TextTestRunner):
             self.outsuffix = time.strftime("%Y%m%d%H%M%S")
         self.elapsed_times = elapsed_times
         self.per_test_output = per_test_output
+        self.encoding = encoding
 
     def _make_result(self):
         """
@@ -454,7 +478,7 @@ class XMLTestRunner(TextTestRunner):
         information about the executed tests.
         """
         return _XMLTestResult(
-            self.stream, self.descriptions, self.verbosity, self.elapsed_times, self.per_test_output
+            self.stream, self.descriptions, self.verbosity, self.elapsed_times, self.per_test_output, self.encoding
         )
 
     def _patch_standard_output(self):
@@ -528,7 +552,7 @@ class XMLTestRunner(TextTestRunner):
             if expectedFails:
                 infos.append("expected failures={0}".format(expectedFails))
             if unexpectedSuccesses:
-                infos.append("unexpected successes={0}".fornat(unexpectedSuccesses))
+                infos.append("unexpected successes={0}".format(unexpectedSuccesses))
 
             if infos:
                 self.stream.writeln(" ({0})".format(", ".join(infos)))
