@@ -24,6 +24,7 @@ except ImportError:
 
 # Allow version to be detected at runtime.
 from .version import __version__, __version_info__
+from collections import OrderedDict
 
 try:
     # Python 3 has a bytes type and in Python 2.6+ bytes is an alias to str.
@@ -93,6 +94,7 @@ class _TestInfo(object):
         self.test_result = test_result
         self.test_method = test_method
         self.outcome = outcome
+        self.test_index = 0
         self.elapsed_time = 0
         self.err = err
         self.std_output = std_output
@@ -114,6 +116,7 @@ class _TestInfo(object):
     def test_finished(self):
         """Save info that can only be calculated once a test has run.
         """
+        self.test_index = self.test_result.test_index
         self.elapsed_time = \
             self.test_result.stop_time - self.test_result.start_time
 
@@ -157,6 +160,7 @@ class _XMLTestResult(_TextTestResult):
         self.elapsed_times = elapsed_times
         self.per_test_output = per_test_output
         self.encoding = encoding
+        self.test_index = 0
 
     def _prepare_callback(self, test_info, target_list, verbose_str,
                           short_str):
@@ -206,6 +210,8 @@ class _XMLTestResult(_TextTestResult):
         if self.callback and callable(self.callback):
             self.callback()
             self.callback = None
+
+        self.test_index += 1
 
     def addSuccess(self, test):
         """
@@ -289,7 +295,8 @@ class _XMLTestResult(_TextTestResult):
         used during the report generation, where a XML report will be created
         for each TestCase.
         """
-        tests_by_testcase = {}
+        testcase_list = []
+        tests_by_testcase = OrderedDict()
 
         for tests in (self.successes, self.failures, self.errors, self.skipped):
             for test_info in tests:
@@ -297,9 +304,13 @@ class _XMLTestResult(_TextTestResult):
                     # This is a skipped, error or a failure test case
                     test_info = test_info[0]
                 testcase_name = test_info.test_name
-                if not testcase_name in tests_by_testcase:
-                    tests_by_testcase[testcase_name] = []
-                tests_by_testcase[testcase_name].append(test_info)
+                testcase_list.append((testcase_name, test_info))
+        testcase_list.sort(key=lambda x: x[1].test_index)
+
+        for test in testcase_list:
+            if not test[0] in tests_by_testcase:
+                tests_by_testcase[test[0]] = []
+            tests_by_testcase[test[0]].append(test[1])
 
         return tests_by_testcase
 
